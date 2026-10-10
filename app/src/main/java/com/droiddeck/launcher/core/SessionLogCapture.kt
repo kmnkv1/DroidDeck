@@ -4,6 +4,7 @@ import android.os.Process
 import android.util.Log
 import java.io.BufferedWriter
 import java.io.File
+import java.io.FileOutputStream
 
 /**
  * `app.log`: what the app itself said while the session ran, and `crash.log`: what Android's crash
@@ -26,9 +27,13 @@ import java.io.File
 object SessionLogCapture {
     private const val TAG = "SessionLogCapture"
 
+    /** How often the session folder's logs are forced to storage. */
+    private const val SYNC_MS = 2000L
+
     private var pid = -1
     private var writer: BufferedWriter? = null
     private var target: File? = null
+    private var syncer: Thread? = null
 
     /** Start mirroring this process's log lines into [target]. Safe to call twice. */
     @Synchronized
@@ -59,6 +64,7 @@ object SessionLogCapture {
                 out.write("logcat could not be started; this ROM may not hand an app its own entries.\n")
                 out.flush()
             }
+            target.parentFile?.let { syncer = startSyncing(it) }
             Log.i(TAG, "app log -> $target (logcat pid $pid)")
         } catch (e: Exception) {
             Log.w(TAG, "could not start the app log", e)
@@ -72,8 +78,29 @@ object SessionLogCapture {
         if (t.parentFile?.absolutePath == dir.absolutePath) stop()
     }
 
+    /**
+     * A device that resets outright (an Odin 3 does, under some loads) loses whatever the kernel had
+     * not written back yet: flush() only reaches the page cache, and f2fs dropped the last one to
+     * three minutes of every log, the very minutes a report needs. So every [SYNC_MS] the files in
+     * the session folder - this log and the ones native parts write beside it - are synced.
+     */
+    private fun startSyncing(dir: File): Thread = Thread({
+        while (true) {
+            try { Thread.sleep(SYNC_MS) } catch (e: InterruptedException) { break }
+            dir.listFiles()?.forEach { f ->
+                if (f.isFile) try {
+                    FileOutputStream(f, true).use { it.fd.sync() }
+                } catch (e: Exception) {
+                    // Best effort: a file that went away, or a full card, is not worth the session.
+                }
+            }
+        }
+    }, "session-log-sync").apply { isDaemon = true; start() }
+
     @Synchronized
     fun stop() {
+        syncer?.interrupt()
+        syncer = null
         target = null
         if (pid != -1) {
             try {

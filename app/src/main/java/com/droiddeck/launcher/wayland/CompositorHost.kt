@@ -11,6 +11,8 @@ import com.droiddeck.launcher.session.SessionState
  * a socket the first one owns.
  */
 object CompositorHost {
+    private const val NO_UBWC_SWITCH = "Download/droiddeck-no-ubwc"
+
     @Volatile
     private var started = false
     private var vsyncRunning = false
@@ -48,6 +50,12 @@ object CompositorHost {
             return false
         }
         WaylandCompositor.nativeSetOutputRefreshRate(refreshHz)
+        // Debug A/B: a file in Downloads stops the compositor offering compressed (UBWC) buffers, so
+        // every client hands it linear ones. Diagnosing whole-device resets on an Odin 3.
+        if (java.io.File(android.os.Environment.getExternalStorageDirectory(), NO_UBWC_SWITCH).isFile) {
+            WaylandCompositor.nativeSetUbwc(false)
+            android.util.Log.i("CompositorHost", "UBWC off: $NO_UBWC_SWITCH exists")
+        }
         WaylandCompositor.nativeStartWithSurface(
             surface, xdgRuntimeDir, driverPath, libraryName, nativeLibDir,
         )
